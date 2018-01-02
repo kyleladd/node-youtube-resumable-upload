@@ -3,7 +3,25 @@ var request		= require('request');
 var EventEmitter	= require('events').EventEmitter;
 var mime		= require('mime');
 var util		= require('util');
-
+//TODO-KL
+if (!String.prototype.startsWith) {
+	String.prototype.startsWith = function(search, pos) {
+		return this.substr(!pos || pos < 0 ? 0 : +pos, search.length) === search;
+	};
+}
+// https://stackoverflow.com/a/33159592/2000485
+Object.defineProperty(Object.prototype, "getProp", {
+    value: function (prop) {
+        var key,self = this;
+        for (key in self) {
+            if (key.toLowerCase() == prop.toLowerCase()) {
+                return self[key];
+            }
+        }
+    },
+    //this keeps jquery happy
+    enumerable: false
+});
 function resumableUpload() {
 	this.byteCount	= 0; //init variables
 	this.tokens	= {};
@@ -21,40 +39,55 @@ util.inherits(resumableUpload, EventEmitter);
 //Init the upload by POSTing google for an upload URL (saved to self.location)
 resumableUpload.prototype.upload = function() {
 	var self = this;
+  self.getUploadInfo(function(){
+    var options = {
+      url:  'https://' + self.host + self.api + '?uploadType=resumable&part=snippet,status,contentDetails',
+      headers: {
+        'Host':     self.host,
+        'Authorization':    'Bearer ' + self.tokens.access_token,
+        'Content-Length':   new Buffer(JSON.stringify(self.metadata)).length,
+        'Content-Type':   'application/json',
+        'X-Upload-Content-Length':  self.size,
+        'X-Upload-Content-Type': self.type
+      },
+      body: JSON.stringify(self.metadata)
+    };
+    //Send request and start upload if success
 
-  // file path
-  if(typeof this.file === 'string'){
-    this.type = fs.statSync(this.file).size;
-    this.size = mime.lookup(this.file);
+    //TODO-KL: handle refesh token
+    request.post(options, function(err, res, body) {
+      if (err || !res.headers.location) {
+        self.emit('error', new Error(err));
+        self.emit('progress', 'Retrying ...');
+        if ((self.retry > 0) || (self.retry <= -1)) {
+          self.retry--;
+          self.upload(); // retry
+        } else {
+          return;
+        }
+      }
+      self.location = res.headers.location;
+      self.send();
+    });
+  });
+}
+
+resumableUpload.prototype.getUploadInfo = function(callback){
+  var self = this;
+  if(self.file.startsWith('http://')||self.file.startsWith('https://')){
+    request.head({url:self.file},function(err,response,body){
+      self.size = response.headers.getProp("Content-Length");
+      self.type = response.headers.getProp("Content-Type");
+      callback();
+    });
   }
-
-	var options = {
-		url:	'https://' + self.host + self.api + '?uploadType=resumable&part=snippet,status,contentDetails',
-		headers: {
-		  'Host':			self.host,
-		  'Authorization':		'Bearer ' + self.tokens.access_token,
-		  'Content-Length':		new Buffer(JSON.stringify(self.metadata)).length,
-		  'Content-Type':		'application/json',
-		  'X-Upload-Content-Length':	this.size,
-		  'X-Upload-Content-Type': this.type
-		},
-		body: JSON.stringify(self.metadata)
-	};
-	//Send request and start upload if success
-	request.post(options, function(err, res, body) {
-		if (err || !res.headers.location) {
-			self.emit('error', new Error(err));
-			self.emit('progress', 'Retrying ...');
-			if ((self.retry > 0) || (self.retry <= -1)) {
-				self.retry--;
-				self.upload(); // retry
-			} else {
-				return;
-			}
-		}
-		self.location = res.headers.location;
-		self.send();
-	});
+  else {
+  	if(typeof self.file === 'string'){
+	    self.size = fs.statSync(self.file).size;
+	    self.type = mime.lookup(self.file);
+	  }
+	  callback();
+	}
 }
 
 //Pipes uploadPipe to self.location (Google's Location header)
@@ -69,79 +102,76 @@ resumableUpload.prototype.send = function() {
 		}
 	}, uploadPipe;
 	try {
-    // file path
-    if(typeof self.file === 'string'){
-      //creates file stream, pipes it to self.location
-      uploadPipe = fs.createReadStream(self.file, {
-        start: self.byteCount,
-        end: self.size
-      });
+    //url path
+    if((self.file.startsWith('http://')||self.file.startsWith('https://'))){
+    	request.get(self.file).pipe(request.put(options, function(error, response, body) {
+			clearInterval(health);
+			if (!error) {
+				self.emit('success', body);
+				return;
+			}
+      //TODO-KL handle refresh token
+			self.emit('error', new Error(error));
+			if ((self.retry > 0) || (self.retry <= -1)) {
+				self.retry--;
+				self.getProgress(function(err, res, b) {
+					if (typeof res.headers.range !== 'undefined') {
+						self.byteCount = res.headers.range.substring(8); //parse response
+					} else {
+						self.byteCount = 0;
+					}
+					self.send();
+				});
+			}
+		}));
     }
-    else{ // already a readable stream
-      uploadPipe = self.file;
+    else{
+      // file path
+      if(typeof self.file === 'string'){
+        //creates file stream, pipes it to self.location
+        uploadPipe = fs.createReadStream(self.file, {
+          start: self.byteCount,
+          end: self.size
+        });
+      }
+      else{ // already a readable stream
+        uploadPipe = self.file;
+      }
+      uploadPipe.pipe(request.put(options, function(error, response, body) {
+        clearInterval(health);
+        if (!error) {
+          self.emit('success', body);
+          return;
+        }
+        self.emit('error', new Error(error));
+        if ((self.retry > 0) || (self.retry <= -1)) {
+          self.retry--;
+          self.getProgress(function(err, res, b) {
+            if (typeof res.headers.range !== 'undefined') {
+              self.byteCount = res.headers.range.substring(8); //parse response
+            } else {
+              self.byteCount = 0;
+            }
+            self.send();
+          });
+        }
+      }));
     }
-
+  }
+    catch (e) {
+    self.emit('error', new Error(e));
+    return;
+  }
+  var health = setInterval(function(){
 		self.getProgress(function(err, res, body) {
 			if (!err && typeof res.headers.range !== 'undefined') {
 				self.emit('progress', res.headers.range.substring(8));
 			}
 		});
 	}, 5000);
-	uploadPipe.pipe(request.put(options, function(error, response, body) {
-		clearInterval(health);
-		if (!error) {
-			self.emit('success', body);
-			return;
-		}
-		self.emit('error', new Error(error));
-		if ((self.retry > 0) || (self.retry <= -1)) {
-			self.retry--;
-			self.getProgress(function(err, res, b) {
-				if (typeof res.headers.range !== 'undefined') {
-					self.byteCount = res.headers.range.substring(8); //parse response
-				} else {
-					self.byteCount = 0;
-				}
-				self.send();
-			});
-		}
-	}));
-var healthCheckInterval = null;
-
-//PUT every 5 seconds to get partial # of bytes uploaded
-resumableUpload.prototype.startMonitoring = function() {
-	var self = this;
-	var options = {
-		url: self.location,
-		headers: {
-		  'Authorization':	'Bearer ' + self.tokens.access_token,
-		  'Content-Length':	0,
-		  'Content-Range':	'bytes */' + self.size
-		}
-	};
-	var healthCheck = function() { //Get # of bytes uploaded
-		request.put(options, function(error, response, body) {
-			if (!error && response.headers.range != undefined) {
-        if(!!response.headers.range){
-  				self.emit('progress', response.headers.range.substring(8, response.headers.range.length) + '/' + self.size);
-        }
-        else{
-          self.emit('progress', response.headers);
-        }
-				if (response.headers.range == self.size) {
-					clearInterval(healthCheckInteral);
-				}
-			}
-		});
-	};
-	healthCheckInterval = setInterval(healthCheck, 5000);
 }
 
-resumableUpload.prototype.clearIntervals = function(){
-  console.log('clearing intervals');
-  clearInterval(healthCheckInterval);
-};
-
+resumableUpload.prototype.getProgress = function(handler) {
 	var self = this;
 	var options = {
 		url: self.location,
