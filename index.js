@@ -3,6 +3,8 @@ var request   = require('request');
 var EventEmitter  = require('events').EventEmitter;
 var mime    = require('mime');
 var util    = require('util');
+//TODO-KL Change to promises with bluebirdjs and request-promise
+// Add retry wrapper around request post to youtube and getting a new token if the old is expired/invalid
 //TODO-KL
 if (!String.prototype.startsWith) {
   String.prototype.startsWith = function(search, pos) {
@@ -29,6 +31,7 @@ function resumableUpload() {
   this.size = 0;
   this.type = '';
   this.metadata = {};
+  this.playlists = [];
   this.retry  = -1;
   this.host = 'www.googleapis.com';
   this.api  = '/upload/youtube/v3/videos';
@@ -94,13 +97,60 @@ resumableUpload.prototype.refreshTokens = function(callback){
       callback.bind(self)();
     });
 }
+resumableUpload.prototype.addVideoToPlaylists = function(video, playlists, callback){
+  var self = this;
+  var itemsProcessed = [];
+  if(!playlists){
+    callback.bind(self)();
+    return;
+  }
+  playlists.forEach(function(playlistId, index, array){
+    self.addVideoToPlaylist(video, playlistId, function(result) {
+      itemsProcessed.push(result);
+      if(itemsProcessed.length === array.length) {
+        callback.bind(self)(itemsProcessed);
+      }
+    });
+  });
+}
+
+resumableUpload.prototype.addVideoToPlaylist = function(video, playlistId, callback){
+  var self = this;
+  var params = {
+                snippet:{
+                    playlistId:playlistId,
+                    resourceId:
+                    {
+                        kind: "youtube#video",
+                        videoId: video.id
+                    }
+                }
+              };
+    request.post({
+      url:"https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,status", 
+      headers: {
+        'Authorization':'Bearer ' + self.tokens.access_token,
+        'Content-Length':   new Buffer(JSON.stringify(params)).length
+    },form: params, json:true }, function(err, res, body) {
+      var result = {};
+      result[playlistId] = true;
+      callback.bind(self)(result);//TODO-KL
+    });
+}
 
 resumableUpload.prototype.getUploadInfo = function(callback){
   var self = this;
   if(typeof self.file === 'string' && (self.file.startsWith('http://')||self.file.startsWith('https://'))){
     request.head({url:self.file},function(err,response,body){
+      if(err || !(200 <= response.statusCode && response.statusCode < 400)){
+        self.emit('error', new Error("Error fetching file. Response: " + response.statusCode + " - " + err));
+        return;
+      }
       self.size = response.headers.getProp("Content-Length");
       self.type = response.headers.getProp("Content-Type");
+      if(self.type === "binary/octet-stream"){
+        self.type = "application/octet-stream";
+      }
       callback.bind(self)();
     });
   }
@@ -130,20 +180,24 @@ resumableUpload.prototype.send = function() {
       request.get(self.file).pipe(request.put(options, function(error, response, body) {
       clearInterval(health);
       if (!error) {
-        self.emit('success', body);
-        return;
-      }
-      self.emit('error', new Error(error));
-      if ((self.retry > 0) || (self.retry <= -1)) {
-        self.retry--;
-        self.getProgress(function(err, res, b) {
-          if (typeof res.headers.range !== 'undefined') {
-            self.byteCount = res.headers.range.substring(8); //parse response
-          } else {
-            self.byteCount = 0;
-          }
-          self.send();
+        self.emit('progress', "Uploaded file successfully to YouTube");
+        self.addVideoToPlaylists(body, self.playlists, function(result){
+          self.emit('success', result);
         });
+      }
+      else{
+        self.emit('error', new Error(error));
+        if ((self.retry > 0) || (self.retry <= -1)) {
+          self.retry--;
+          self.getProgress(function(err, res, b) {
+            if (typeof res.headers.range !== 'undefined') {
+              self.byteCount = res.headers.range.substring(8); //parse response
+            } else {
+              self.byteCount = 0;
+            }
+            self.send();
+          });
+        }
       }
     }));
     }
@@ -162,20 +216,24 @@ resumableUpload.prototype.send = function() {
       uploadPipe.pipe(request.put(options, function(error, response, body) {
         clearInterval(health);
         if (!error) {
-          self.emit('success', body);
-          return;
-        }
-        self.emit('error', new Error(error));
-        if ((self.retry > 0) || (self.retry <= -1)) {
-          self.retry--;
-          self.getProgress(function(err, res, b) {
-            if (typeof res.headers.range !== 'undefined') {
-              self.byteCount = res.headers.range.substring(8); //parse response
-            } else {
-              self.byteCount = 0;
-            }
-            self.send();
+          self.emit('progress', "Uploaded file successfully to YouTube");
+          self.addVideoToPlaylists(body, self.playlists, function(result){
+            self.emit('success', result);
           });
+        }
+        else{
+          self.emit('error', new Error(error));
+          if ((self.retry > 0) || (self.retry <= -1)) {
+            self.retry--;
+            self.getProgress(function(err, res, b) {
+              if (typeof res.headers.range !== 'undefined') {
+                self.byteCount = res.headers.range.substring(8); //parse response
+              } else {
+                self.byteCount = 0;
+              }
+              self.send();
+            });
+          }
         }
       }));
     }
