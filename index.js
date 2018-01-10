@@ -74,7 +74,7 @@ resumableUpload.prototype.startUpload = function() {
           self.startUpload(); // retry
         }
       } else {
-        return;
+        self.emit('error', new Error("Exhausted retry attempts. Status Code: " + res.statusCode + " Error: " + err));
       }
     }
     else{
@@ -100,18 +100,19 @@ resumableUpload.prototype.refreshTokens = function(callback){
 resumableUpload.prototype.addVideoToPlaylists = function(video, playlists, callback){
   var self = this;
   var itemsProcessed = [];
-  if(!playlists){
+  if(!playlists || playlists.length === 0){
     callback.bind(self)();
-    return;
   }
-  playlists.forEach(function(playlistId, index, array){
-    self.addVideoToPlaylist(video, playlistId, function(result) {
-      itemsProcessed.push(result);
-      if(itemsProcessed.length === array.length) {
-        callback.bind(self)(itemsProcessed);
-      }
+  else{
+    playlists.forEach(function(playlistId, index, array){
+      self.addVideoToPlaylist(video, playlistId, function(result) {
+        itemsProcessed.push(result);
+        if(itemsProcessed.length === array.length) {
+          callback.bind(self)(itemsProcessed);
+        }
+      });
     });
-  });
+  }
 }
 
 resumableUpload.prototype.addVideoToPlaylist = function(video, playlistId, callback){
@@ -130,11 +131,17 @@ resumableUpload.prototype.addVideoToPlaylist = function(video, playlistId, callb
       url:"https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,status", 
       headers: {
         'Authorization':'Bearer ' + self.tokens.access_token,
-        'Content-Length':   new Buffer(JSON.stringify(params)).length
-    },form: params, json:true }, function(err, res, body) {
+        'Content-Length':   new Buffer(JSON.stringify(params)).length,
+        'Content-Type': "application/json; charset=UTF-8"
+    },body: params, json:true }, function(err, res, body) { // api does not support form, use body
       var result = {};
-      result[playlistId] = true;
-      callback.bind(self)(result);//TODO-KL
+      if(err){
+        result[playlistId] = {succeeded:false,message:err};
+      }
+      else{
+        result[playlistId] = {succeeded:true,message:body};
+      }
+      callback.bind(self)(result);
     });
 }
 
@@ -172,7 +179,8 @@ resumableUpload.prototype.send = function() {
       'Authorization':  'Bearer ' + self.tokens.access_token,
       'Content-Length': self.size - self.byteCount,
       'Content-Type': self.type
-    }
+    }, 
+    json:true
   }, uploadPipe;
   try {
     //url path
@@ -218,7 +226,8 @@ resumableUpload.prototype.send = function() {
         if (!error) {
           self.emit('progress', "Uploaded file successfully to YouTube");
           self.addVideoToPlaylists(body, self.playlists, function(result){
-            self.emit('success', result);
+            //This should be an object
+            self.emit('success', "Upload Body: " + body + "\n\nPlaylists: " + result);
           });
         }
         else{
