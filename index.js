@@ -190,7 +190,7 @@ resumableUpload.prototype.send = function() {
       if (!error) {
         self.emit('progress', "Uploaded file successfully to YouTube");
         self.addVideoToPlaylists(body, self.playlists, function(result){
-          self.emit('success', result);
+          self.emit('success', {video:body,playlists:result});
         });
       }
       else{
@@ -227,7 +227,7 @@ resumableUpload.prototype.send = function() {
           self.emit('progress', "Uploaded file successfully to YouTube");
           self.addVideoToPlaylists(body, self.playlists, function(result){
             //This should be an object
-            self.emit('success', "Upload Body: " + body + "\n\nPlaylists: " + result);
+            self.emit('success', {video:body,playlists:result});
           });
         }
         else{
