@@ -74,7 +74,8 @@ resumableUpload.prototype.startUpload = function() {
           self.startUpload(); // retry
         }
       } else {
-        self.emit('error', new Error("Exhausted retry attempts. Status Code: " + res.statusCode + " Error: " + err));
+        self.emit('failed', {status:"Failed", message: "Exhausted retry attempts. Status Code: " + res.statusCode + " Error: " + err});
+        return;
       }
     }
     else{
@@ -148,17 +149,25 @@ resumableUpload.prototype.addVideoToPlaylist = function(video, playlistId, callb
 resumableUpload.prototype.getUploadInfo = function(callback){
   var self = this;
   if(typeof self.file === 'string' && (self.file.startsWith('http://')||self.file.startsWith('https://'))){
-    request.head({url:self.file},function(err,response,body){
-      if(err || !(200 <= response.statusCode && response.statusCode < 400)){
-        self.emit('error', new Error("Error fetching file. Response: " + response.statusCode + " - " + err));
-        return;
+    request.head({url:self.file},function(err,res,body){
+      if(err || !(200 <= res.statusCode && res.statusCode < 400)){
+        self.emit('error', new Error("Error fetching file. Response: " + res.statusCode + " - " + err));
+        if ((self.retry > 0) || (self.retry <= -1)) {
+            self.retry--;
+            self.getUploadInfo(callback); // retry
+        } else {
+          self.emit('failed', {status:"Failed", message: "Exhausted retry attempts. Error fetching file. Status Code: " + res.statusCode + " Error: " + err});
+          return;
+        }
       }
-      self.size = response.headers.getProp("Content-Length");
-      self.type = response.headers.getProp("Content-Type");
-      if(self.type === "binary/octet-stream"){
-        self.type = "application/octet-stream";
+      else{
+        self.size = res.headers.getProp("Content-Length");
+        self.type = res.headers.getProp("Content-Type");
+        if(self.type === "binary/octet-stream"){
+          self.type = "application/octet-stream";
+        }
+        callback.bind(self)();
       }
-      callback.bind(self)();
     });
   }
   else {
@@ -190,7 +199,7 @@ resumableUpload.prototype.send = function() {
       if (!error) {
         self.emit('progress', "Uploaded file successfully to YouTube");
         self.addVideoToPlaylists(body, self.playlists, function(result){
-          self.emit('success', {video:body,playlists:result});
+          self.emit('success', {status:"Success",video:body,playlists:result});
         });
       }
       else{
@@ -205,6 +214,10 @@ resumableUpload.prototype.send = function() {
             }
             self.send();
           });
+        }
+        else{
+          self.emit('failed', {status:"Failed", message: "Exhausted retry attempts. Error: " + error});
+          return;
         }
       }
     }));
@@ -227,7 +240,7 @@ resumableUpload.prototype.send = function() {
           self.emit('progress', "Uploaded file successfully to YouTube");
           self.addVideoToPlaylists(body, self.playlists, function(result){
             //This should be an object
-            self.emit('success', {video:body,playlists:result});
+            self.emit('success', {status:"Success",video:body,playlists:result});
           });
         }
         else{
@@ -243,12 +256,16 @@ resumableUpload.prototype.send = function() {
               self.send();
             });
           }
+          else{
+            self.emit('failed', {status:"Failed", message: "Exhausted retry attempts. Error: " + error});
+            return;
+          }
         }
       }));
     }
   }
-    catch (e) {
-    self.emit('error', new Error(e));
+  catch (e) {
+    self.emit('failed', {status:"Failed", message: e});
     return;
   }
   var health = setInterval(function(){
