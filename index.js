@@ -50,7 +50,7 @@ resumableUpload.prototype.upload = function() {
     })
     .then(function(d){
       debug("COMPLETE!",d);
-      return "COMPLETE!";
+      return d;
     })
     .catch(function(err){
       debug("upload catch",err);
@@ -159,7 +159,6 @@ resumableUpload.prototype.addVideoToPlaylists = function(video, playlists){
 
 resumableUpload.prototype.addVideoToPlaylist = function(video, playlistId){
   var self = this;
-  debug("video",video);
   return new Promise(function (resolve, reject) {
     var params = {
       snippet:{
@@ -175,8 +174,8 @@ resumableUpload.prototype.addVideoToPlaylist = function(video, playlistId){
     request.post({
       url:"https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,status", 
       headers: {
-        'Authorization':'Bearer ' + self.tokens.access_token,
-        'Content-Length':   new Buffer(JSON.stringify(params)).length,
+        'Authorization': 'Bearer ' + self.tokens.access_token,
+        'Content-Length': new Buffer(JSON.stringify(params)).length,
         'Content-Type': "application/json; charset=UTF-8"
     },body: params, json:true }, function(err, res, body) { // youtube api does not support form, use body
       var result = {};
@@ -268,12 +267,8 @@ resumableUpload.prototype.send = function() {
             debug("Error streaming upload from url",error);
             if ((self.retry > 0) || (self.retry <= -1)) {
               self.retry--;
-              self.getProgress(function(err, res, b) {
-                if (typeof res.headers.range !== 'undefined') {
-                  self.byteCount = res.headers.range.substring(8); //parse response
-                } else {
-                  self.byteCount = 0;
-                }
+              return self.getProgress()
+              .then(function(){
                 debug("Retrying resumable upload from url");
                 return self.send()
                   .then(function(l){
@@ -316,20 +311,16 @@ resumableUpload.prototype.send = function() {
             debug("Error uploading from file stream", error);
             if ((self.retry > 0) || (self.retry <= -1)) {
               self.retry--;
-              self.getProgress(function(err, res, b) {
-                if (typeof res.headers.range !== 'undefined') {
-                  self.byteCount = res.headers.range.substring(8); //parse response
-                } else {
-                  self.byteCount = 0;
-                }
-                return self.send()
-                  .then(function(l){
-                    return resolve(l);
-                  })
-                  .catch(function(e){
-                    return reject(e);
-                  });
-              });
+              return self.getProgress()
+                .then(function(){
+                  return self.send()
+                    .then(function(l){
+                      return resolve(l);
+                    })
+                    .catch(function(e){
+                      return reject(e);
+                    });
+                });
             }
             else{
               return reject({status:"Failed", message: "Exhausted retry attempts. Error: " + error});
@@ -347,15 +338,24 @@ resumableUpload.prototype.send = function() {
 resumableUpload.prototype.getProgress = function(handler) {
   var self = this;
   debug("getting progress");
-  var options = {
-    url: self.location,
-    headers: {
-      'Authorization':  'Bearer ' + self.tokens.access_token,
-      'Content-Length': 0,
-      'Content-Range':  'bytes */' + self.size
-    }
-  };
-  request.put(options, handler);
+  return new Promise(function (resolve, reject) {
+    var options = {
+      url: self.location,
+      headers: {
+        'Authorization':  'Bearer ' + self.tokens.access_token,
+        'Content-Length': 0,
+        'Content-Range':  'bytes */' + self.size
+      }
+    };
+    request.put(options, function(err, res, b) {
+      if (typeof res.headers.range !== 'undefined') {
+        self.byteCount = res.headers.range.substring(8); //parse response
+      } else {
+        self.byteCount = 0;
+      }
+      return resolve(self.byteCount);
+    });
+  });
 }
 
 module.exports = resumableUpload;
