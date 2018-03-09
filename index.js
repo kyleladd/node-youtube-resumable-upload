@@ -54,6 +54,7 @@ resumableUpload.prototype.upload = function() {
     })
     .catch(function(err){
       debug("upload catch",err);
+      throw err;
     });
 }
 
@@ -104,7 +105,7 @@ resumableUpload.prototype.startUpload = function() {
           }
         }
         else{
-          return reject({status:"Failed", message: "Failed to start upload. Exhausted retry attempts. Status Code: " + res.statusCode + " Error: " + err});
+          return reject({status:"Failed", message: "Failed to start upload. Exhausted retry attempts. Status Code: " + res.statusCode + " URL: " + options.url + " Error: " + err});
         }
       }
       else{
@@ -199,7 +200,7 @@ resumableUpload.prototype.getUploadInfo = function(callback){
       debug("Getting upload info via http request");
       request.head({url:self.file},function(err,res,body){
         if(err || !(200 <= res.statusCode && res.statusCode < 400)){
-          debug("Error fetching file. Response: " + res.statusCode + " - " + err);
+          debug("Error fetching file - URL: " + self.file + " Response: " + res.statusCode + " - " + err);
           if ((self.retry > 0) || (self.retry <= -1)) {
               self.retry--;
               return self.getUploadInfo()
@@ -211,8 +212,8 @@ resumableUpload.prototype.getUploadInfo = function(callback){
               });
           } 
           else {
-            debug("Exhausted retry attempts. Error fetching file. Status Code: " + res.statusCode + " Error: " + err);
-            return reject({status:"Failed", message: "Get Upload Info - Exhausted retry attempts. Error fetching file. Status Code: " + res.statusCode + " Error: " + err});
+            debug("Exhausted retry attempts. Error fetching file - URL: " + self.file + " Status Code: " + res.statusCode + " Error: " + err);
+            return reject({status:"Failed", message: "Get Upload Info - Exhausted retry attempts. Error fetching file - URL: " + self.file + " Status Code: " + res.statusCode + " Error: " + err});
           }
         }
         else{
@@ -264,12 +265,12 @@ resumableUpload.prototype.send = function() {
             });
           }
           else{
-            debug("Error streaming upload from url",error);
+            debug("Error streaming upload from url - " + self.file, error);
             if ((self.retry > 0) || (self.retry <= -1)) {
               self.retry--;
               return self.getProgress()
               .then(function(){
-                debug("Retrying resumable upload from url");
+                debug("Retrying resumable upload from url - " + self.file);
                 return self.send()
                   .then(function(l){
                     return resolve(l);
@@ -281,7 +282,7 @@ resumableUpload.prototype.send = function() {
             }
             else{
               debug("emitting failed",error);
-              return reject({status:"Failed", message: "Exhausted retry attempts. Error: " + error});
+              return reject({status:"Failed", message: "Exhausted retry attempts. URL: " + self.file + " Error: " + error});
             }
           }
         }));
